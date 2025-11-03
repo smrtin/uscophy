@@ -1,0 +1,9 @@
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - click
+  - pandas
+  - matplotlib
+  - seaborn
+  - sqlite

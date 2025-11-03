@@ -1,0 +1,336 @@
+#### SNAKEFILE ####
+
+import pandas as pd 
+import os
+from os import listdir 
+from os.path import isfile, join
+import numpy as np
+
+## these should be variable later on
+input_dir=config["input_dir"] #'input'
+output_dir=config["output_dir"]
+set_name=config["set_name"]
+#busco_lineages=config["lineage"]
+fasta_file_extension='fa'
+
+workflow_folder = os.path.dirname(os.path.abspath(workflow.snakefile))
+
+sys.path.append(os.path.join(workflow_folder, "scripts"))
+
+#FILES=glob_wildcards(multiext((os.path.join(input_dir , "{busco_id}")), '.fas','.fa'))
+FILES=glob_wildcards(os.path.join(input_dir , "{{busco_id}}.{}".format(fasta_file_extension)))
+
+localrules: all 
+
+def aggregate_profiles(wildcards):
+    checkpoint_output = checkpoints.rename_input_alignment.get(**wildcards).output[0]
+    return expand(os.path.join(output_dir , "{set_name}/prfl/{busco_id}.prfl"), 
+            set_name=set_name, 
+           busco_id=glob_wildcards(os.path.join(checkpoint_output, "{{busco_id}}.{}".format(fasta_file_extension),)).busco_id)
+
+def aggregate_hmms(wildcards):
+    checkpoint_output = checkpoints.rename_input_alignment.get(**wildcards).output[0]
+    return expand(os.path.join(output_dir , "{set_name}/hmms/{busco_id}.hmm"), 
+            set_name=set_name, 
+           busco_id=glob_wildcards(os.path.join(checkpoint_output,  "{{busco_id}}.{}".format(fasta_file_extension),)).busco_id)
+
+
+rule all:
+    input:
+        aggregate_profiles,
+        aggregate_hmms,
+        
+        expand(os.path.join(output_dir , "{set_name}/scores_cutoff"),
+             set_name=set_name, 
+            output_dir=output_dir
+             ),
+        expand(os.path.join(output_dir , "{set_name}/lengths_cutoff"),
+             set_name=set_name, 
+            output_dir=output_dir
+            ),
+        expand(os.path.join(output_dir , "{set_name}/ancestral"),
+            set_name=set_name,
+            output_dir=output_dir
+            ),
+        expand(os.path.join(output_dir , "{set_name}/ancestral_variants"),
+            set_name=set_name, 
+            output_dir=output_dir, 
+            ),
+        expand(os.path.join(output_dir , "{set_name}/refseq_db.faa.gz"),
+        set_name=set_name, 
+            output_dir=output_dir,
+            ),
+        expand(os.path.join(output_dir , "{set_name}/dataset.cfg"),
+            set_name=set_name, 
+            output_dir=output_dir,
+        )
+        
+
+
+checkpoint rename_input_alignment:
+    input:
+        expand(os.path.join(input_dir , "{{input_id}}.{}".format(fasta_file_extension)),input_id=FILES.busco_id),
+    output:
+        directory(os.path.join(output_dir , "input"))
+    conda:
+        "envs/bio_script.yaml"
+    script:
+        "./scripts/rename_build_inputfiles.py"
+
+rule prepare_alignment:
+    input:
+        file=os.path.join(output_dir  , "input/{{busco_id}}.{}".format(fasta_file_extension)),
+    output:
+        prep=temp(os.path.join(output_dir , "prep_alignments/{busco_id}.fas")),
+        trim=temp(os.path.join(output_dir , "prep_alignments/{busco_id}.fasta"))
+    conda:
+        "envs/build_prep.yaml"
+    log:
+        os.path.join(output_dir , "logs/prepare_alignment_{busco_id}.log")
+    shell:
+        """
+(prepareAlign < {input.file} > {output.prep}
+sed -i "/^>/! {{s/U/-/g}}" {output.prep}
+
+trimal -in {output.prep} -out {output.trim} -strictplus )&> {log}
+
+        """
+
+rule rename_alignment_header:
+    input:
+        os.path.join(output_dir , "prep_alignments/{busco_id}.fasta")
+    output:
+        temp(os.path.join(output_dir , "prep_alignments/{busco_id}.simple.fas"))
+    conda:
+        "envs/bio_script.yaml"
+    script:
+        "./scripts/rename_alignment_header.py"
+
+
+
+rule build_profile:
+    input:
+        os.path.join(output_dir , "prep_alignments/{busco_id}.fasta")
+    output:
+        os.path.join(output_dir , "{set_name}/prfl/{busco_id}.prfl")
+    conda:
+        "envs/build_prep.yaml"
+    log:
+        os.path.join(output_dir , "logs/{set_name}_build_profile_{busco_id}.log")
+    shell:
+        """
+( msa2prfl.pl {input} > {output} )&> {log}
+"""
+
+rule build_hmms:
+    input:
+        os.path.join(output_dir , "prep_alignments/{busco_id}.fasta")
+    output:
+        os.path.join(output_dir , "{set_name}/hmms/{busco_id}.hmm")
+    conda:
+        "envs/hmmer.yaml"
+    log:
+        os.path.join(output_dir , "logs/{set_name}_build_hmms_{busco_id}.log")
+    shell:
+        """
+( hmmbuild {output} {input} )&> {log}
+"""
+
+rule get_ancestral:
+    input:
+        alignment=os.path.join(output_dir , "prep_alignments/{busco_id}.simple.fas")
+    output:
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple_ancest.raxml.ancestralStates")),
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple_ancest.raxml.ancestralProbs")),
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple_ancest.raxml.ancestralTree")),
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple_ancest.raxml.log")), 
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple_ancest.raxml.rba")),
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple_ancest.raxml.startTree")),
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple.raxml.bestModel")),
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple.raxml.bestTree")),
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple.raxml.log")),
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple.raxml.mlTrees")),
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple.raxml.rba")),
+        temp(os.path.join(output_dir ,"prep_alignments/{busco_id}.simple.raxml.startTree"))
+    params:
+        prefix1=os.path.join(output_dir , "prep_alignments/{busco_id}.simple"),
+        prefix2=os.path.join(output_dir , "prep_alignments/{busco_id}.simple_ancest"),
+        tree=os.path.join(output_dir , "prep_alignments/{busco_id}.simple.raxml.bestTree"),
+    conda:
+        "envs/raxml-ng.yaml"
+    log:
+        os.path.join(output_dir , "logs/get_ancestral_{busco_id}.log")
+    threads:
+        2
+    shell:
+        """
+    
+( raxml-ng --msa {input.alignment} --model JTT --prefix {params.prefix1} --threads {threads} --seed 2
+
+raxml-ng --ancestral --model JTT --msa {input.alignment} --prefix {params.prefix2} --threads {threads} --tree {params.tree} )&>{log}
+
+"""
+
+def aggregate_ancestral_variants(wildcards):
+    checkpoint_output = checkpoints.rename_input_alignment.get(**wildcards).output[0]
+    return expand(os.path.join(output_dir , "prep_alignments/{busco_id}.simple_ancest.raxml.ancestralStates"), 
+           busco_id=glob_wildcards(os.path.join(checkpoint_output, "{busco_id}.fas",)).busco_id)
+
+
+rule collect_ancestral_variants:
+    input:
+        aggregate_ancestral_variants
+        #expand(os.path.join(output_dir , "prep_alignments/{busco_id}.simple_ancest.raxml.ancestralStates"),
+        #    busco_id=FILES.busco_id 
+        #    ),
+    output:
+        os.path.join(output_dir , "{set_name}/ancestral_variants")
+    conda:
+        "envs/bio_script.yaml"
+    script:
+        "./scripts/rename_ancestral_header.py"
+
+         
+
+rule collect_ancestral:
+    input:
+        aggregate_hmms
+        #expand(os.path.join(output_dir , "{{set_name}}/hmms/{busco_id}.hmm"),
+        #    busco_id=FILES.busco_id 
+        #    ),
+    output:
+        os.path.join(output_dir , "{set_name}/ancestral")
+    conda:
+         "envs/hmmer.yaml"
+    shell:
+        """    
+printf '' > {output}
+
+for file in {input}; do 
+
+    hmmemit -c $file | sed 's/-consensus//gi' >> {output}
+
+done
+"""
+
+rule build_refseq:
+    input:
+        os.path.join(output_dir , "{set_name}/ancestral"),
+        os.path.join(output_dir , "{set_name}/ancestral_variants")
+    output:
+        db=os.path.join(output_dir , "{set_name}/refseq_db.faa"),
+        zipped=os.path.join(output_dir , "{set_name}/refseq_db.faa.gz")
+    shell:
+        """
+cat {input} > {output.db}
+
+sleep 10 
+
+gzip < {output.db} > {output.zipped}
+"""
+
+
+##
+
+rule create_config:
+    input:
+        aggregate_hmms
+        #expand(os.path.join(output_dir , "{{set_name}}/hmms/{busco_id}.hmm"),
+        #    busco_id=FILES.busco_id 
+        #    ),
+    output:
+        os.path.join(output_dir , "{set_name}/dataset.cfg")
+    shell:
+        """
+COUNTER=0
+for file in {input}; do COUNTER=$((COUNTER+1)); done
+
+printf "name={wildcards.set_name}
+species=fly
+domain=eukaryota
+creation_date=$(date '+%Y-%m-%d')
+number_of_BUSCOs=$COUNTER
+number_of_species=unknown
+max_intron=130000
+max_seq_len=160000
+OrthoDB_version=10.1" > {output}
+         """
+
+
+rule get_score:
+    input:
+        hmm=os.path.join(output_dir , "{set_name}/hmms/{busco_id}.hmm")
+    output:
+        sample=temp(os.path.join(output_dir , "{set_name}/working_dir/{busco_id}.fas")),
+        hmmtbl=temp(os.path.join(output_dir , "{set_name}/working_dir/{busco_id}.hmmtbl")),
+        hmmout=temp(os.path.join(output_dir , "{set_name}/working_dir/{busco_id}.hmmout")),
+    conda:
+        "envs/hmmer.yaml"
+    log:
+        os.path.join(output_dir , "logs/{set_name}_build_hmms_{busco_id}.log")
+    shell:
+        """
+( hmmemit -o {output.sample} -N 5 {input.hmm}
+hmmsearch --tblout {output.hmmtbl} -o {output.hmmout} {input.hmm} {output.sample} )&> {log}
+
+"""
+
+def aggregate_scores(wildcards):
+    checkpoint_output = checkpoints.rename_input_alignment.get(**wildcards).output[0]
+    return expand(os.path.join(output_dir , "{{set_name}}/working_dir/{busco_id}.hmmtbl"), 
+           busco_id=glob_wildcards(os.path.join(checkpoint_output, "{busco_id}.fas",)).busco_id)
+
+
+rule collect_scores:
+    input:
+        aggregate_scores
+        #expand(os.path.join(output_dir , "{{set_name}}/working_dir/{busco_id}.hmmtbl"),
+        #    busco_id=FILES.busco_id 
+        #    ),
+    output:
+        os.path.join(output_dir , "{set_name}/scores_cutoff")
+    shell:
+        """
+printf '' > {output}
+
+for table in {input}; do 
+
+    BUSCO_ID=$( basename ${{table%.hmmtbl}} )
+    LOWEST_SCORE=$(grep -v '#' $table  | tr -s " " | cut -f6 -d' ' | sort | head -1)
+
+    CUTOFF=$(awk -v n="$LOWEST_SCORE" 'BEGIN{{ print int(n*0.9) }}')
+    
+    printf "$BUSCO_ID\\t$CUTOFF\\n" >> {output}
+done
+"""
+
+def aggregate_sequence_files(wildcards):
+    checkpoint_output = checkpoints.rename_input_alignment.get(**wildcards).output[0]
+    return expand(os.path.join(output_dir , "{{set_name}}/working_dir/{busco_id}.fas"), 
+           busco_id=glob_wildcards(os.path.join(checkpoint_output, "{busco_id}.fas",)).busco_id)
+
+
+rule collect_length_cutoff:
+    input:
+        aggregate_sequence_files
+        #expand(os.path.join(output_dir , "{{set_name}}/working_dir/{busco_id}.fas"),
+        #    busco_id=FILES.busco_id 
+        #    ),
+    output:
+        os.path.join(output_dir , "{set_name}/lengths_cutoff")
+    conda:
+        "envs/bio_script.yaml"
+    script:
+        "./scripts/get_mean_length.py"
+
+
+
+onsuccess:
+    print("Workflow finished successfully!\nThank you for using buscophy.")
+#    print("Generating report...")
+#    shell("snakemake --report report.zip")
+    print("Done!")
+
+onerror:
+    print("An error occurred!")
+    print("See the log file for more details ...")

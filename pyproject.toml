@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools >= 64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uscophy"
+version = "1.0"
+description = "usco phylo - a workflow to extract single copy busco genes from genomes and prepare them for phylogenetic reconstruction"
+authors = [
+    { name = "Sebastian Martin", email = "s.martin@leibniz-lib.de" }
+]
+license = { text = "BSD-3" }
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Topic :: Scientific/Engineering :: Bio-Informatics"
+]
+keywords = [
+    "phylogenetics",
+    "bioinformatics",
+    "busco",
+    "single-copy genes",
+    "workflow"
+]
+dependencies = []
+
+[project.scripts]
+uscophy = "uscophy.uscophy:main"
+
+[project.urls]
+Homepage = "https://github.com/smrtin/uscophy"
+Source = "https://github.com/smrtin/uscophy"
+Tracker = "https://github.com/smrtin/uscophy/issues"
+
+[tool.setuptools]
+packages = ["uscophy"]
+
+[tool.setuptools.package-data]
+uscophy = [
+    "workflow/*",
+    "workflow/envs/*",
+    "workflow/scripts/*"
+]
+

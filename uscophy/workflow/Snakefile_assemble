@@ -1,0 +1,225 @@
+from unittest.util import _count_diff_all_purpose
+import pandas as pd 
+from os import listdir
+from os.path import isfile, join
+import re
+
+
+
+busco_lineages=config["lineage"]
+busco_path=config["lineage_path"]
+reference_genome=config["reference_genome"] if "reference_genome" in config else ""
+denovo_assembly=True if "denovo" in config else ""
+output_dir=config["output_dir"]
+assembly_threads=config["assembly_threads"]
+
+if "assembly_sample_info" in config :
+    assembly_sample_info=config["assembly_sample_info"] 
+    samples = pd.read_table(assembly_sample_info , dtype=str)#.set_index(["Sample"], drop=False)
+    List_of_Samples=samples['Sample'].tolist()
+
+else:
+    assembly_sample_info=""
+
+def get_sample_forward(sample_id):
+    area_dict = dict(zip(samples['Sample'],samples['Forward']))
+    forward = area_dict[sample_id]  
+    return forward
+
+def get_sample_reverse(sample_id):
+    area_dict = dict(zip(samples['Sample'],samples['Reverse']))
+
+    reverse = area_dict[sample_id]
+    return reverse
+    
+rule all:
+    input:
+        expand(os.path.join(output_dir , "{sample}.fas"), 
+                sample=List_of_Samples ) if assembly_sample_info else [],
+
+
+rule busco_download:
+    output:
+        os.path.join(busco_path, "{lineage}/refseq_db.faa")
+    params:    
+        dwnld=os.path.dirname(os.path.normpath(busco_path))
+    log:
+        os.path.join(output_dir , "logs/busco/download_{lineage}.log")
+    conda:
+        "envs/busco.yaml"
+    shell:
+        """
+   ( [ -d {params.dwnld} ] || mkdir -p {params.dwnld}
+    
+    busco --download_path {params.dwnld} --download {wildcards.lineage} ) &> {log}
+
+    gunzip -c {output}.gz > {output}
+        """
+
+
+rule rename_reads:
+    output:
+        R1=temp(os.path.join(output_dir , "target_assembly/raw/{sample}_1.fq.gz")),
+        R2=temp(os.path.join(output_dir , "target_assembly/raw/{sample}_2.fq.gz"))
+    params:
+        fwd=lambda wildcards: get_sample_forward('{}'.format(wildcards.sample) ),
+        rev=lambda wildcards: get_sample_reverse('{}'.format(wildcards.sample) )
+    shell:
+        """
+cat {params.fwd} > {output.R1}
+cat {params.rev} > {output.R2}
+"""
+
+rule trimming:
+    input:
+        R1=os.path.join(output_dir , "target_assembly/raw/{sample}_1.fq.gz"),
+        R2=os.path.join(output_dir , "target_assembly/raw/{sample}_2.fq.gz")
+    output:
+        R1=temp(os.path.join(output_dir , "target_assembly/trimming/{sample}_R1.fq.gz")),
+        R2=temp(os.path.join(output_dir , "target_assembly/trimming/{sample}_R2.fq.gz"))
+    conda:
+        "envs/trim.yaml"
+    threads:
+        10
+    log:
+        os.path.join(output_dir , "logs/target_assembly/trimming/{sample}.log")
+    shell:
+        """
+(fastp -i {input.R1} -I {input.R2} -o {output.R1} -O {output.R2} \
+     --length_required 100 --low_complexity_filter --detect_adapter_for_pe --trim_poly_x \
+     --json results/logs/trimming/{wildcards.sample}.fastp.json \
+     --thread {threads} --html results/logs/trimming/{wildcards.sample}.fastp.html  ) &> {log}
+"""
+
+rule build_diamond_db:
+    input:
+        os.path.join(busco_path, "{lineage}/refseq_db.faa"),
+    output:
+        db=temp(os.path.join(output_dir , "target_assembly/prefilter/diamond_{lineage}.dmnd"))
+    params:
+        db=os.path.join(output_dir , "target_assembly/prefilter/diamond_{lineage}")
+    conda:
+        "envs/diamond.yaml"
+    threads:
+        1
+    log:
+        os.path.join(output_dir , "logs/target_assembly/build_diamond_db_{lineage}.log")
+    shell:
+        """
+( diamond makedb --in {input} -d {params.db} )&> {log}
+"""
+
+
+rule diamond_filter:
+    input:
+        db=os.path.join(output_dir , "target_assembly/prefilter/diamond_{lineage}.dmnd"),
+        R1=os.path.join(output_dir , "target_assembly/trimming/{sample}_R1.fq.gz"),
+        R2=os.path.join(output_dir , "target_assembly/trimming/{sample}_R2.fq.gz")
+    output:
+        R1=os.path.join(output_dir , "target_assembly/prefilter/{lineage}/{sample}_R1.tsv"),
+        R2=os.path.join(output_dir , "target_assembly/prefilter/{lineage}/{sample}_R2.tsv"),
+    params:
+        db=os.path.join(output_dir , "target_assembly/prefilter/diamond_{lineage}")
+    conda:
+        "envs/diamond.yaml"
+    log:
+        os.path.join(output_dir , "logs/target_assembly/diamond/read_mapping_{lineage}_{sample}.log")
+    threads: 
+        10
+    shell:
+        """
+(  diamond blastx --bin 64 --max-target-seqs 1 --db {params.db} --query {input.R1} --out {output.R1} --threads {threads} --sensitive
+ diamond blastx --bin 64 --max-target-seqs 1 --db {params.db} --query {input.R2} --out {output.R2} --threads {threads} --sensitive )&> {log}
+
+"""
+
+
+#### assemble all ###
+rule diamond_filter_fastq:
+    input:
+        filter_R1=os.path.join(output_dir , "target_assembly/prefilter/{lineage}/{sample}_R1.tsv"),
+        filter_R2=os.path.join(output_dir , "target_assembly/prefilter/{lineage}/{sample}_R2.tsv"),
+        R1=os.path.join(output_dir , "target_assembly/trimming/{sample}_R1.fq.gz"),
+        R2=os.path.join(output_dir , "target_assembly/trimming/{sample}_R2.fq.gz")
+    output:
+        R1=temp(os.path.join(output_dir , "target_assembly/filtered/{lineage}/{sample}_R1.fastq")),
+        R2=temp(os.path.join(output_dir , "target_assembly/filtered/{lineage}/{sample}_R2.fastq")),
+        List=os.path.join(output_dir , "target_assembly/filtered/{lineage}/{sample}.reads.list"),
+    params:
+        db=os.path.join(output_dir , "target_assembly/prefilter/diamond_{lineage}")
+    log:
+        os.path.join(output_dir , "logs/target_assembly/diamond/read_filter__{lineage}_{sample}.log")
+    threads:
+        1
+    conda:
+        "envs/seqtk.yaml"
+    shell:
+        """
+( cut -f1 {input.filter_R1} {input.filter_R2} | sort | uniq > {output.List}
+
+seqtk subseq {input.R1} {output.List} > {output.R1}
+seqtk subseq {input.R2} {output.List} > {output.R2} )&> {log}
+
+"""
+
+
+rule assembly_spades_pre:
+    input:
+        [os.path.join(output_dir , "target_assembly/trimming/{sample}_R1.fq.gz"),
+        os.path.join(output_dir , "target_assembly/trimming/{sample}_R2.fq.gz")] if denovo_assembly  else  [expand(os.path.join(output_dir , "target_assembly/filtered/{lineage}/{{sample}}_R1.fastq"), lineage=busco_lineages),
+            expand(os.path.join(output_dir , "target_assembly/filtered/{lineage}/{{sample}}_R2.fastq"), lineage=busco_lineages)]
+    output:
+        out_spades=os.path.join(output_dir , "target_assembly/assembly/{sample}/contigs.fasta")
+    conda:
+        "envs/spades.yaml"
+    threads:
+        assembly_threads  
+    params:
+        prefix=lambda wildcards, output: os.path.dirname(os.path.normpath(output[0])),
+    log:
+        os.path.join(output_dir , "logs/target_assembly/assembly/spades.{sample}.log")
+    shell:
+        """
+ ( spades.py -1 {input[0]} -2 {input[1]} -o {params.prefix} --only-assembler --threads {threads} )&>{log}
+
+ """
+
+rule scaffold_ragtag:
+    input:
+        assembly=os.path.join(output_dir , "target_assembly/assembly/{sample}/contigs.fasta"),
+        ref=reference_genome
+    output:
+        ragtag=os.path.join(output_dir , "target_assembly/ragtag/{sample}/ragtag.scaffold.fasta"),
+    params:
+        out_dir=os.path.join(output_dir , "target_assembly/ragtag/{sample}"),
+        min_ali=100,
+        min_gap=50
+    threads:
+        10
+    log:
+        os.path.join(output_dir , "logs/target_assembly/ragtag.{sample}.log")
+    conda:
+        "envs/ragtag.yaml"
+    shell:
+        """
+[ -d {params.out_dir} ] || mkdir -p {params.out_dir}  
+
+( ragtag.py scaffold \
+ -o {params.out_dir} \
+ -t {threads} \
+ -f {params.min_ali} \
+ -r \
+ -g {params.min_gap} \
+ {input.ref} {input.assembly} )&> {log}
+        """
+
+rule scaffold_assembly:
+    input:
+        os.path.join(output_dir , "target_assembly/ragtag/{sample}/ragtag.scaffold.fasta") if reference_genome else os.path.join(output_dir , "target_assembly/assembly/{sample}/contigs.fasta")
+    output:
+        os.path.join(output_dir,"{sample}.fas")
+    shell:
+        """
+cp {input} {output}
+
+"""

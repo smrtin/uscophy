@@ -1,0 +1,8 @@
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - seqtk
+  - iqtree
+  - treeshrink
+  - newick_utils

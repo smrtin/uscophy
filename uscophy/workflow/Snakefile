@@ -1,0 +1,611 @@
+#### SNAKEFILE ####
+
+import pandas as pd 
+import os
+from os import listdir 
+from os.path import isfile, join
+import numpy as np
+import logging
+
+## these should be variable later on
+genomic_dir=config["genomic_dir"] 
+FILES=glob_wildcards(os.path.join(genomic_dir , "{sample}.fas"))
+
+transcriptomic_dir=config["transcriptomic_dir"] if "transcriptomic_dir" in config else ""
+FILES_trans=glob_wildcards(os.path.join(transcriptomic_dir , "{sample}.fas"))
+
+busco_lineages=config["lineage"]
+busco_path=config["lineage_path"]
+
+genetree=config["genetree"]
+output_dir=config["output_dir"]
+alignment_software=config["alignment_software"]
+modeltesting=config["modeltesting"]
+##
+
+logs_dir = os.path.join(output_dir, "logs")
+
+os.makedirs(logs_dir, exist_ok=True)
+logger = logging.getLogger(__name__)
+logging.basicConfig(filename=os.path.join(logs_dir, "main.log"), encoding='utf-8', level=logging.INFO)
+
+
+workflow_folder = os.path.dirname(os.path.abspath(workflow.snakefile))
+sys.path.append(os.path.join(workflow_folder, "scripts"))
+
+localrules: all #, busco_download
+
+rule all:
+    input:
+        os.path.join(output_dir , "phylo/overview_matrix.tsv"), # make sure script is in environment
+        os.path.join(output_dir , "busco/summary/busco_figure.png"),
+        os.path.join(output_dir , "phylo/busco_phylo.treefile"),
+        os.path.join(output_dir, "phylo/overview_matrix.tsv"),
+        os.path.join(output_dir , "phylo/busco_tree_plot.pdf"),
+        os.path.join(output_dir ,"phylo/genetree/astral_tree.tre") if genetree else [],
+        os.path.join(output_dir, "busco/plot_by_category.pdf") if "sample_category_csv" in config else [],
+        os.path.join(output_dir , "busco/busco_threshold_plot.png"),
+        #os.path.join(output_dir , "phylo/busco_phylo_nt.treefile")
+
+
+rule busco_download:
+    output:
+        refseq = os.path.join(busco_path, "{lineage}/refseq_db.faa"),
+        ancestral = os.path.join(busco_path, "{lineage}/ancestral_variants")
+    params:    
+        dwnld=os.path.dirname(os.path.normpath(busco_path))
+    log:
+        os.path.join(output_dir , "logs/busco/download_{lineage}.log")
+    conda:
+        "envs/busco.yaml"
+    shell:
+        """
+   ( [ -d {params.dwnld} ] || mkdir -p {params.dwnld}
+    
+    busco -f --download_path {params.dwnld} --download {wildcards.lineage} ) &> {log}
+
+    # odb10 does not compress, odb12 automatically decompresses
+    [ -f {output.refseq}.gz ] && gunzip -c {output.refseq}.gz > {output.refseq}
+
+        """
+
+
+rule set_min_genes:
+    input:
+        expand(os.path.join(busco_path, "{lineage}/refseq_db.faa"), lineage=busco_lineages)
+    output:
+        os.path.join(output_dir , "busco/minimum_genes.txt")
+    params:
+        directory=os.path.join(busco_path, busco_lineages, "hmms"),
+        user_value=lambda wildcards: float(config["min_genes"])
+    log:
+        os.path.join(output_dir , "logs/busco/set_min_genes.log")
+    run:
+        import os
+        import sys
+        # redirect output to logfile
+        with open(log[0], "w") as logfile:
+
+            count = len([f for f in os.listdir(params.directory) if os.path.isfile(os.path.join(params.directory, f))])
+            val = params.user_value
+
+            if val > count:
+              print(f"WARNING: Config value ({val}) is greater than number of files ({count}). Stopping.", file=logfile)
+            #sys.exit(1)   # Stops Snakemake, job is considered failed
+            elif val > 1 and val <= count:
+                outval = int(val)
+                percentage = round(100 * outval / count, 1)
+                print("Total number of Busco Genes are {}, we are using {} Percent ({} Genes)".format(count, percentage, outval ), file=logfile)
+
+            elif val >= 0 and val <= 1:
+                outval = int(round(count * val))
+                percentage = round(val *100 , 1)  
+                print("Total number of Busco Genes are {}, we are using {} Percent ({} Genes)".format(count, percentage, outval ), file=logfile)
+            else:
+                print(f"ERROR: Invalid config value {val}.", file=logfile)
+                sys.exit(1)
+
+        with open(output[0], "w") as fout:
+            fout.write(str(outval) + "\n")
+
+
+
+    
+rule busco_run:
+    input:
+        assembly=os.path.join(genomic_dir , "{sample}.fas"),
+        sets=os.path.join(busco_path, "{lineage}/refseq_db.faa")
+    params:
+        mode="genome",
+        busco_out_dir=os.path.join(output_dir , "busco/genome/{sample}"),
+        lineages_dir=busco_path ,
+        dwnld=os.path.dirname(os.path.normpath(busco_path)),
+    output:
+        busco_summary=os.path.join(output_dir , "busco/genome/{sample}/short_summary.specific.{lineage}.{sample}.txt"),
+        busco_table=os.path.join(output_dir , "busco/genome/{sample}/run_{lineage}/full_table.tsv")
+    threads: 
+        lambda wildcards, input: max(10, int(workflow.cores // 4))
+        # at least 10 threads, max parallel busco runs: 4 
+    log:
+        os.path.join(output_dir , "logs/busco/{sample}.{lineage}.busco.log")
+    conda:
+        "envs/busco.yaml"
+    shell:
+        """
+( busco -m {params.mode} \
+        -i {input.assembly} \
+        -o {params.busco_out_dir}  \
+        --quiet \
+        --metaeuk \
+        -l {params.lineages_dir}/{wildcards.lineage} \
+        --download_path {params.dwnld} \
+        -c {threads} \
+        -f \
+        --offline  ) &> {log}
+
+"""
+
+rule busco_run_trans:
+    input:
+        assembly=os.path.join(transcriptomic_dir , "{sample}.fas"),
+        sets=os.path.join(busco_path, "{lineage}/refseq_db.faa")
+    params:
+        mode="transcriptome",
+        busco_out_dir=os.path.join(output_dir , "busco/transcriptome/{sample}"),
+        lineages_dir=busco_path ,
+        dwnld=os.path.dirname(os.path.normpath(busco_path)),
+    output:
+        busco_summary=os.path.join(output_dir , "busco/transcriptome/{sample}/short_summary.specific.{lineage}.{sample}.txt"),
+        busco_table=os.path.join(output_dir , "busco/transcriptome/{sample}/run_{lineage}/full_table.tsv")
+    threads: 
+        lambda wildcards, input: max(10, int(workflow.cores // 4))
+        # at least 10 threads, max parallel busco runs: 4 
+    log:
+        os.path.join(output_dir , "logs/busco/{sample}.{lineage}.busco.log")
+    conda:
+        "envs/busco.yaml"
+    shell:
+        """
+( busco -m {params.mode} -i {input.assembly} -o {params.busco_out_dir}  --quiet \
+        -l {params.lineages_dir}/{wildcards.lineage} --download_path {params.dwnld} -c {threads} -f --offline  ) &> {log}
+
+"""
+
+
+
+rule busco_summary:
+    input:
+        expand(os.path.join(output_dir , "busco/{busco_mode}/{sample}/short_summary.specific.{lineage}.{sample}.txt"), 
+            busco_mode='genome',  sample=FILES.sample, lineage=busco_lineages ),
+        expand(os.path.join(output_dir , "busco/{busco_mode}/{sample}/short_summary.specific.{lineage}.{sample}.txt"), 
+            busco_mode='transcriptome', sample=FILES_trans.sample, lineage=busco_lineages ) if transcriptomic_dir else [],
+    output:
+        os.path.join(output_dir , "busco/summary/busco_figure.png"),
+    params:
+        dir=os.path.join(output_dir , "busco/summary/")
+    threads: 
+        1
+    conda:
+        "envs/busco.yaml"
+    shell:
+        """
+COUNTER=0
+for file in {input}; do cp $file {params.dir} ; COUNTER=$[$COUNTER +1]; done
+
+generate_plot.py -wd {params.dir} --quiet
+
+
+if (( COUNTER > 50 )); then
+    PLOTHIGHT=$((COUNTER / 2))
+    sed -E "s/^(my_height).+/\\1 <- ${{PLOTHIGHT}}/" {params.dir}/busco_figure.R > {params.dir}/busco_figure_modified.R
+    sed -E -i "s/(unit = my_unit)/\\1 , limitsize = FALSE/" {params.dir}/busco_figure_modified.R
+
+    Rscript {params.dir}/busco_figure_modified.R
+
+fi
+
+"""
+
+
+#################
+## Busco Phylo ##
+#################
+
+rule busco_load_db:
+    input:
+        in_file = rules.busco_run.output.busco_table 
+    output:
+        database = os.path.join(output_dir , "busco/genome/{sample}/run_{lineage}/busco_database.sqlite3") 
+    params:
+        input_dir = os.path.join(output_dir , "busco/genome/{sample}/run_{lineage}/")
+    threads:
+        1
+    conda:
+        "envs/sqlite3.yaml"
+    script:
+        "scripts/build_busco_db.py"
+
+
+rule busco_load_db_trans:
+    input:
+        in_file = rules.busco_run_trans.output.busco_table 
+    output:
+        database = os.path.join(output_dir , "busco/transcriptome/{sample}/run_{lineage}/busco_database.sqlite3") 
+    params:
+        input_dir = os.path.join(output_dir , "busco/transcriptome/{sample}/run_{lineage}/")
+    threads:
+        1
+    conda:
+        "envs/sqlite3.yaml"
+    script:
+        "scripts/build_busco_db.py"
+
+
+rule build_diamond_ancestral_variants:
+    input:
+        os.path.join(busco_path, "{lineage}/ancestral_variants")
+    output:
+        os.path.join(busco_path, "{lineage}/ancestral_variants_diamond.dmnd")
+    threads:
+        5
+    shell:
+        """
+diamond makedb --in {input} -d {output} --threads {threads}
+        """
+
+rule identify_best_duplicate:
+    input:
+        busco_db=os.path.join(output_dir , "busco/{busco_mode}/{sample}/run_{lineage}/busco_database.sqlite3"),
+        diamond_db=os.path.join(busco_path, "{lineage}/ancestral_variants_diamond.dmnd")
+    output:
+        os.path.join(output_dir , "busco/{busco_mode}/{sample}/run_{lineage}/busco_database_duplchecked.sqlite3")
+    log:
+        os.path.join(output_dir, "logs/busco/identify_best_duplicate_{busco_mode}_{sample}_{lineage}.log")
+    threads:
+        5
+    conda:
+        "envs/sqlite3.yaml"
+    script:
+        "scripts/select_best_duplicate.py"
+
+
+def get_busco_database_inputs(config, output_dir, FILES, FILES_trans, busco_lineages, transcriptomic_dir):
+    inputs = []
+
+    # Genome mode
+    db_suffix = "busco_database_duplchecked.sqlite3" if config["duplicated"] else "busco_database.sqlite3"
+    inputs += expand(
+        os.path.join(output_dir, "busco/genome/{sample}/run_{lineage}/" + db_suffix),
+        sample=FILES.sample,
+        lineage=busco_lineages,
+    )
+
+    # Transcriptome mode (only if transcriptomic_dir is set)
+    if transcriptomic_dir:
+        inputs += expand(
+            os.path.join(output_dir, "busco/transcriptome/{sample}/run_{lineage}/" + db_suffix),
+            sample=FILES_trans.sample,
+            lineage=busco_lineages,
+        )
+
+    return inputs
+
+
+rule busco_collect_dbs:
+    input:
+       get_busco_database_inputs(config, output_dir, FILES, FILES_trans, busco_lineages, transcriptomic_dir)
+    output:
+        database = os.path.join(output_dir , "busco/busco_database_collection.sqlite3") 
+    threads:
+        1
+    log:
+        os.path.join(output_dir, "logs/busco/merge_busco_databases.log")
+    conda:
+        "envs/sqlite3.yaml"
+    script:
+        "scripts/merge_databases.py"
+
+
+rule plot_sample_busco_threshold:
+    input:
+        database = os.path.join(output_dir , "busco/busco_database_collection.sqlite3")
+    output:
+        os.path.join(output_dir , "busco/busco_threshold_plot.png")
+    threads:
+        1
+    log:
+        os.path.join(output_dir, "logs/busco/busco_threshold_plot.log")
+    conda:
+        "envs/plot_by_category.yaml"
+    shell:
+        """
+    ( python3 {workflow.basedir}/scripts/plot_species_busco_threshold.py \
+        --output {output} \
+        {input.database} )&>{log}
+        """
+        
+checkpoint get_sequences:
+    input: 
+        database = os.path.join(output_dir, "busco/busco_database_collection.sqlite3"),
+        value_file=os.path.join(output_dir , "busco/minimum_genes.txt"), 
+        category_csv = lambda wildcards: config["sample_category_csv"] if "sample_category_csv" in config else []
+    output:
+        directory(os.path.join(output_dir, "alignments/sequences/"))
+    params:
+        fragmented = config["fragmented"],
+        duplicated = config["duplicated"],
+        min_taxa = config["min_spec"],
+        min_taxa_per_category = config.get("min_taxa_per_category", ""),
+        min_genes=lambda wildcards, input: int(open(input.value_file).read().strip())
+    log:
+        os.path.join(output_dir, "logs/busco/get_sequences.log")
+    conda:
+        "envs/sqlite3.yaml"
+    threads:
+        1
+    script:
+        "scripts/collect_sequences_from_db.py"
+
+
+
+
+rule plot_by_category:
+    input: 
+        database = os.path.join(output_dir, "busco/busco_database_collection.sqlite3"),
+        category_csv = lambda wildcards: config["sample_category_csv"] if "sample_category_csv" in config else []
+    output:
+        os.path.join(output_dir, "busco/plot_by_category.pdf")
+    log:
+        os.path.join(output_dir, "logs/busco/plot_by_category.log")
+    conda:
+        "envs/plot_by_category.yaml"
+    threads:
+        1
+    shell:
+        """     
+( python3 {workflow.basedir}/scripts/plot_by_category.py \
+    --sample_file {input.category_csv} \
+    --sqlite_file {input.database} \
+    --output {output} )&>{log}      
+    """
+
+rule busco_alignment_mafft:
+    input:
+        os.path.join(output_dir , "alignments/sequences/{busco_EOG}.fas")
+    output:
+        os.path.join(output_dir , "alignments/mafft/{busco_EOG}.fas")
+    threads: 
+        5
+    log:
+        os.path.join(output_dir , "logs/alignments/mafft/{busco_EOG}.log")
+    conda:
+        "envs/mafft.yaml"
+    shell:
+        """
+( mafft-linsi --thread {threads} {input} > {output} )&>{log}
+"""
+
+rule busco_alignment_hmmali:
+    input:
+        seqfile=os.path.join(output_dir , "alignments/sequences/{busco_EOG}.fas"),
+        hmm=expand(os.path.join(busco_path, "{lineage}/hmms/{{busco_EOG}}.hmm"),lineage=busco_lineages),
+    output:
+        os.path.join(output_dir , "alignments/hmmalign/{busco_EOG}.fas")
+    threads: 
+        1
+    log:
+        os.path.join(output_dir , "logs/alignments/hmmalign/{busco_EOG}.log")
+    conda:
+        "envs/hmmer.yaml"
+    shell:
+        """
+( hmmalign  --informat fasta --outformat afa -o {output} {input.hmm} {input.seqfile} 
+# replace all dots and lower case aminoacids
+sed -i '/>/! s/\.\\|[a-z]/-/g' {output} )&>{log}
+"""
+#--trim
+
+rule busco_trim:
+    input:
+        expand(os.path.join(output_dir , "alignments/{alignment_software}/{{busco_EOG}}.fas"),alignment_software=alignment_software),  
+    output:
+        os.path.join(output_dir , "alignments/trimmed/{busco_EOG}.fas")
+    threads: 
+        5
+    log:
+        os.path.join(output_dir , "logs/alignments/trimmed/{busco_EOG}.log")
+    conda:
+        "envs/trimal.yaml"
+    shell:
+        """
+( trimal -in {input} -out {output} -gappyout )&> {log}
+"""
+
+
+def aggregate_EOGs(wildcards):
+    checkpoint_output = checkpoints.get_sequences.get(**wildcards).output[0]
+    return expand(os.path.join(output_dir , "alignments/trimmed/{busco_EOG}.fas"),
+           busco_EOG=glob_wildcards(os.path.join(checkpoint_output, "{busco_EOG}.fas",)).busco_EOG)
+
+
+rule busco_supermatrix:
+    input:
+        aggregate_EOGs
+    output:
+        matrix=os.path.join(output_dir , "phylo/supermatrix_aa.fas"),
+        partitions=os.path.join(output_dir , "phylo/partitions.txt")
+    threads: 
+        1
+    log:
+        os.path.join(output_dir , "logs/phylo/supermatrix.log")
+    conda:
+        "envs/amas.yaml"
+    shell:
+        """
+( AMAS.py concat \
+  -f fasta \
+  -d aa \
+  --concat-out {output.matrix} \
+  --concat-part {output.partitions} \
+  --part-format nexus \
+  -i {input}  ) &> {log}
+"""
+
+
+rule overview:
+    input:
+        os.path.join(output_dir, "phylo/supermatrix_aa.fas") 
+    output:
+        table=os.path.join(output_dir, "phylo/overview_matrix.tsv")
+    params:
+        in_dir=os.path.join(output_dir , "alignments/trimmed/")
+    conda:
+        "envs/bio.yaml"
+    log:
+        os.path.join(output_dir , "logs/phylo/overview_matrix.log")
+    script:
+        "scripts/final_overview.py"
+
+
+
+rule busco_iqtree:
+    input:
+        matrix=os.path.join(output_dir, "phylo/supermatrix_aa.fas"),
+        partitions=os.path.join(output_dir , "phylo/partitions.txt")
+    output:
+        os.path.join(output_dir , "phylo/busco_phylo.treefile")
+    threads: 
+        60
+    params:
+        out_prefix=os.path.join(output_dir , "phylo/busco_phylo"),
+        model=modeltesting 
+    conda:
+        "envs/iqtree.yaml"
+    log:
+        os.path.join(output_dir , "logs/busco_phylo/iqtree.log")
+    shell:
+        """
+( iqtree -s {input.matrix} -m {params.model} -p {input.partitions} --prefix {params.out_prefix} -T AUTO --threads-max {threads} -msub nuclear -B 1000 -redo ) &> {log}
+
+        """
+
+rule build_busco_tree:
+    input:
+        newick=os.path.join(output_dir , "phylo/busco_phylo.treefile"),
+        category_csv = lambda wildcards: config["sample_category_csv"] if "sample_category_csv" in config else [],
+        busco_summary=os.path.join(output_dir , "busco/summary/busco_figure.png"),
+    params:
+        busco_dir=os.path.join(output_dir , "busco/summary/"),
+        outgroup = lambda wildcards: config["outgroup"] if "outgroup" in config else [],
+    output:
+        pdf=os.path.join(output_dir , "phylo/busco_tree_plot.pdf")
+    threads: 
+        1
+    conda:
+        "envs/busco_tree.yaml"
+    log:
+        os.path.join(output_dir , "logs/busco_phylo/busco_tree.log")
+    shell:
+        """
+ ( CATEGORY={input.category_csv}
+ [ -n "$CATEGORY" ] && CAT_OPT="--annotation $CATEGORY" || CAT_OPT=''
+
+OUTGROUP={params.outgroup}
+ [ -n "$OUTGROUP" ] && OUTGRP_OPT="--outgroup $OUTGROUP" || OUTGRP_OPT=''
+
+ python3 {workflow.basedir}/scripts/generate_busco_tree.py \
+    --newick {input.newick} \
+    --busco-folder {params.busco_dir} \
+    --output {output.pdf} $CAT_OPT $OUTGRP_OPT )&>{log}      
+"""
+        
+
+rule genetree_iqtree:
+    input:
+        os.path.join(output_dir , "alignments/trimmed/{busco_EOG}.fas")      
+    output:
+        tree=os.path.join(output_dir , "phylo/genetree/{busco_EOG}_genetree.treefile"),
+        rest=temp(multiext(os.path.join(output_dir , "phylo/genetree/{busco_EOG}_genetree"), ".model.gz", ".ckp.gz", ".log", ".bionj", ".iqtree", ".contree", ".mldist", ".splits.nex"))
+    threads: 
+        5
+    params:
+        prefix=lambda wildcards, output: output[0][:-9],
+        #out_prefix="results/phylo/genetree/{busco_EOG}_aa_genetree",
+        model=modeltesting 
+    conda:
+        "envs/iqtree.yaml"
+    log:
+        os.path.join(output_dir , "logs/phylo/gene_tree/{busco_EOG}.log")
+    shell:
+        """
+(   if [ -s {input} ]; then 
+        iqtree -s {input} --prefix {params.prefix} -T AUTO --threads-max {threads} -m {params.model} -msub nuclear -B 1000
+    else 
+        echo "{input} is empty"
+        touch {output.tree} {output.rest} 
+    fi)&>{log}
+        """
+
+def aggregate_EOGs_genetrees(wildcards):
+    checkpoint_output = checkpoints.get_sequences.get(**wildcards).output[0]
+    return expand(os.path.join(output_dir , "phylo/genetree/{busco_EOG}_genetree.treefile"),
+           busco_EOG=glob_wildcards(os.path.join(checkpoint_output, "{busco_EOG}.fas",)).busco_EOG)
+
+rule genetree_collect:
+    input:
+        aggregate_EOGs_genetrees      
+    output:
+        trees=os.path.join(output_dir ,"phylo/genetree/all_genetrees.tre"),
+        trees_path=os.path.join(output_dir ,"phylo/genetree/all_genetrees_path.list"),
+        filtered=os.path.join(output_dir ,"phylo/genetree/all_genetrees_filtered-bs.tre"),
+    threads: 1
+    params:
+        bs_cutoff='10'
+    conda:
+        "envs/astral.yaml"
+    log:
+        os.path.join(output_dir , "logs/phylo/gene_tree/all_genetrees.log")
+    shell:
+        """
+INPUT=''
+printf '' > {output.trees_path}
+for FILE in {input} ; do
+    if [ -s ${{FILE}} ]; then INPUT+=" ${{FILE}}" ; echo "${{FILE}}" >> {output.trees_path} ; 
+    else  echo "file ${{FILE}} is empty";  
+    fi
+done
+
+cat ${{INPUT}} > {output.trees}
+
+nw_ed  {output.trees} "i & b<={params.bs_cutoff}" o > {output.filtered}
+        """
+
+
+rule genetree_astral:
+    input:
+        trees=os.path.join(output_dir ,"phylo/genetree/all_genetrees_filtered-bs.tre"),
+        tree_path=os.path.join(output_dir ,"phylo/genetree/all_genetrees_path.list")
+    output:
+        os.path.join(output_dir ,"phylo/genetree/astral_tree.tre")
+    threads: 
+        1
+    conda:
+        "envs/astral.yaml"
+    log:
+        os.path.join(output_dir , "logs/phylo/gene_tree/astral.log")
+    shell:
+        """
+(astral --input {input.trees} --output {output}  ) &> {log}
+
+        """
+#astral --input {input.trees} --output {output} --bootstraps {input.tree_path} --reps 1000 
+
+onsuccess:
+    print("Workflow finished successfully!\nThank you for using uscophy.")
+#    print("Generating report...")
+#    shell("snakemake --report report.zip")
+    print("Done!")
+
+onerror:
+    print("An error occurred!")
+    print("See the log file for more details ...")
