@@ -56,44 +56,59 @@ uscophy run --help
 Usage: uscophy run [OPTIONS]
 
 Options:
-  -g, --genomic TEXT             directory that contains all genome files with
-                                 a .fas ending [ default: input ]
-  -t, --transcriptomic TEXT      directory that contains all transcriptomic
-                                 files with a .fas ending [ default:
-                                 transcriptomes ]
-  -l, --lineage TEXT             provide a busco lineage [ default:
-                                 metazoa_odb10 ]
-  -o, --output TEXT              directory that contains the busco sets [
-                                 default: output ]
-  -n, --num_taxa INTEGER         number of minimum taxa in sequences alignment
-                                 of the busco gene [ default: 3 ]
-  -f, --frag                     also include fragmented busco genes
-  -m, --min_genes INTEGER        number of minimum busco genes per sample [
-                                 default: 100 ]
-  --mafft                        use mafft as anlignment software
-  --hmmalign                     use hmmalign as anlignment software
-  --genetree                     also generate genetrees and reconstuct
-                                 phylogeny with astral
-  --modeltesting [JTT|TEST|MFP]  Modeltesting option for the tree
-                                 reconstruction step (JTT, TEST, MFP)
-                                 [default: JTT]
-  --threads INTEGER              provide number of threads / cores / jobs
-  -d, --dry                      Test execution.
-  -s, --snakemake TEXT           additional snakemake options and command
-  --help                         Show this message and exit.
+  -g, --genomic TEXT              directory that contains all genome files
+                                  with a .fas ending [ default: input ]
+  -t, --transcriptomic TEXT       directory that contains all transcriptomic
+                                  files with a .fas ending [ default:
+                                  transcriptomes ]
+  -l, --lineage TEXT              provide a busco lineage [ default:
+                                  metazoa_odb10 ]
+  -o, --output TEXT               directory that contains the busco sets [
+                                  default: output ]
+  -n, --num_taxa INTEGER          minimum number of taxa in alignment of the
+                                  busco gene to be included in further
+                                  analysis [ default: 5 ]
+  -f, --frag                      also include fragmented busco genes
+  -b, --best_duplicated           also include best duplicated sequencs. Most
+                                  similar to the ancestral variants of the
+                                  busco lineage.
+  -m, --min_genes FLOAT           number of minimum busco genes per sample [
+                                  default: 100 ]. When a number between 0 and
+                                  1 is provided, it will be interpreted as
+                                  percentage of the total number of genes
+                                  available in the busco set.
+  --alignment_software [mafft|hmmalign]
+                                  choose an alignment software (mafft or
+                                  hmmalign)  [default: mafft]
+  --genetree                      also generate genetrees and reconstuct
+                                  phylogeny with astral
+  --modeltesting [JTT|TEST|MFP]   Modeltesting option for the tree
+                                  reconstruction step (JTT, TEST, MFP)
+                                  [default: JTT]
+  --threads INTEGER               provide number of threads / cores / jobs
+  -d, --dry                       Test execution.
+  -s, --snakemake TEXT            additional snakemake options and command
+  --category-csv PATH             Optional: Path to sample_category.csv.
+  --min-taxa-per-category TEXT    Optional: Minimum taxa per category string,
+                                  e.g. 'cat1:3,cat2:5'
+  --outgroup TEXT                 Optional: Provide a Sample-ID that is used
+                                  as an Outgroup in the final tree
+  --help                          Show this message and exit.
+
   ```
 
 In case we have some unassembled illumina short read data (e.g. from a genome skimming project ), we can use uscophy assemble to start the assembly process. We need to provide a list that contains the path to the paired end reads. We can prefilter reads for similarity to our reference busco genes and only assemble those (bioinformatic target enrichment step) or generate a de-novo assembly. In case we have a genome assembly of a closely related relative, we can use it to scaffold the contigs after the primary assembly.
 
 ```
-age: uscophy assemble [OPTIONS]
+uscophy assemble --help
+Usage: uscophy assemble [OPTIONS]
 
 Options:
   -l, --lineage TEXT              provide a busco lineage [ default:
                                   metazoa_odb10 ]
   -o, --output TEXT               directory that contains the busco sets [
                                   default: output ]
-  -s, --samples TEXT              sample file with information about sample
+  --samples TEXT                  sample file with information about sample
                                   and read files  [required]
   -t, --threads INTEGER           provide number of threads / cores / jobs [
                                   default: 5 ]
@@ -106,6 +121,25 @@ Options:
   --dry                           Test execution.
   -s, --snakemake TEXT            additional snakemake options and command
   --help                          Show this message and exit.
+                        Show this message and exit.
+```
+
+When we try to join different datasets or need a custom reference set that is not represented with the classic busco lineages, it is also possible to build a custom reference set that is usable with the busco software. This is still experimental and we recommend to try to use the busco lineages as a reference, also for comparabiliy and other reasons. As input we will need a directory containing the reference orthologous aminoacid sequences.
+
+```
+uscophy build --help
+Usage: uscophy build [OPTIONS]
+
+Options:
+  -t, --threads INTEGER  provide number of threads / cores / jobs
+  -d, --dry              Test execution.
+  -i, --input TEXT       directory that contains all alignment files with a
+                         .fas ending [ default: input ]
+  -o, --output TEXT      directory that contains the busco sets [ default: ./
+                         ]
+  -n, --set_name TEXT    name your busco set [default: custom_set_odb10 ]
+  -s, --snakemake TEXT   additional snakemake options and command
+  --help                 Show this message and exit.
 ```
 
 This project was previously developed here: https://gitlab.leibniz-lib.de/smartin/buscophy
