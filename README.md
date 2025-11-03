@@ -153,14 +153,14 @@ Before starting the program activate the conda environment
 
 
 ### Prepare a test Dataset ###
+
+As an example dataset we can quickly download 9 Cirripedia genomes with the help of NCBIs datasets. This will be about 2GB in size. Then we can run a script that extracts the genomes from the zip-file and save them in a directory in .fas format, which we can use as input for our workflow.
+
 ```bash
 
 conda activate ./environment
 
 bash download_example_data.sh
-
-python3 python uscophy/workflow/scripts/extract_dataset.py Example_Dataset.zip -o input_test --generate-category
-
 
 ```
 
@@ -172,13 +172,13 @@ If everything looks ok, we can start the real run.
 ```bash
 
 uscophy run    \
-   --genomic input_test \
+   --genomic input \
    --output output \
    --lineage metazoa_odb10    \
    --frag    \
    --alignment_software mafft    \
    --modeltesting TEST    \
-   --threads 100 \
+   --threads 56 \
    --category-csv input_test/samples_metadata.csv
    
 ```
