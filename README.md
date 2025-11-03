@@ -146,9 +146,6 @@ This project was previously developed here: https://gitlab.leibniz-lib.de/smarti
 
 ## Example ##
 
-Download sequneces from ncbi and change file name to species_name.fas and place in a directory: input_test 
-We will download some Cirripedia genomes (currently 7 Genomes in a 2GB zip-file). 
-
 Before starting the program activate the conda environment 
 
 
@@ -164,7 +161,7 @@ bash download_example_data.sh
 
 ```
 
-This will also generate a category file in the output directory (input_test/samples_metadata.csv), which can be manually adjusted.
+This will also generate a category file in the output directory (input/samples_metadata.csv), which can be manually adjusted.
 
 ### Run first analysis ###
 Now we can use the genome assemblies in our example input folder 'input_test' and start a dry run. With this we will get an overview about all the steps that will be processed. 
@@ -179,7 +176,7 @@ uscophy run    \
    --alignment_software mafft    \
    --modeltesting TEST    \
    --threads 56 \
-   --category-csv input_test/samples_metadata.csv
+   --category-csv input/samples_metadata.csv
    
 ```
 
@@ -187,7 +184,7 @@ uscophy run    \
 Since the we use snakemake inside the uscophy workflow, we can also make use of the available functionality. It is possible to pass snakemake arguments via the --snakemake option.
 
 ```bash
-uscophy --input input_test/ --min_taxa 5 --lineage metazoa_odb10 --threads 56 --snakemake "--until busco_summary --printshellcmds"
+uscophy --input input/ --min_taxa 5 --lineage metazoa_odb10 --threads 56 --snakemake "--until busco_summary --printshellcmds"
 
 ```
 
