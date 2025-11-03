@@ -202,5 +202,5 @@ https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/cluster-ge
 
 A graphical overview about the main steps of the workflow can be seen here:
 
-![image info](uscophy/uscophy/workflow_dag.svg)
+![image info](uscophy/workflow_dag.svg)
 
